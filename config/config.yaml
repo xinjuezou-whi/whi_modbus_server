@@ -1,0 +1,5 @@
+whi_modbus_server:
+  ros__parameters:
+    frequency: 20.0 # hz
+    port: /dev/ttyUART_485_1
+    baudrate: 115200
