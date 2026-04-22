@@ -24,6 +24,30 @@ All text above must be included in any redistribution.
 
 namespace whi_modbus_server
 {
+    static uint16_t crc16(const uint8_t* Data, size_t Length)
+    {
+        uint16_t crc = 0xffff;
+        uint16_t polynomial = 0xa001;
+
+        for (size_t i = 0; i < Length; ++i)
+        {
+            crc ^= Data[i];
+            for (int j = 0; j < 8; ++j)
+            {
+                if ((crc & 0x0001))
+                {
+                    crc = (crc >> 1) ^ polynomial;
+                }
+                else
+                {
+                    crc >>= 1;
+                }
+            }
+        }
+
+        return crc;
+    }
+
     Modbus::Modbus(std::shared_ptr<rclcpp::Node>& NodeHandle)
         : node_handle_(NodeHandle)
     {
@@ -79,6 +103,8 @@ namespace whi_modbus_server
 
     void Modbus::threadRead()
     {
+        Data::Pack* restore = nullptr;
+
         while (!terminated_.load())
         {
             size_t count = serial_inst_->available();
@@ -94,9 +120,38 @@ namespace whi_modbus_server
                         {
                             std::lock_guard<std::mutex> lock(search_pack->second->mtx_);
                             search_pack->second->data_ = std::vector<uint8_t>(rbuff, rbuff + readNum);
-                            search_pack->second->read_time_ = rclcpp::Clock().now();
-                            search_pack->second->ready_ = true;
-                            search_pack->second->cv_.notify_all();
+                            if (search_pack->second->data_.size() > 4)
+                            {
+                                search_pack->second->read_time_ = rclcpp::Clock().now();
+                                search_pack->second->ready_ = true;
+                                search_pack->second->cv_.notify_all();
+                            }
+                            else
+                            {
+                                restore = search_pack->second.get();
+                                continue;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (restore)
+                        {
+                            // simple restore mechanism
+                            std::lock_guard<std::mutex> lock(restore->mtx_);
+                            restore->data_.insert(restore->data_.end(), rbuff, rbuff + readNum);
+                            restore->read_time_ = rclcpp::Clock().now();
+                            restore->ready_ = true;
+                            restore->cv_.notify_all();
+#ifdef DEBUG
+    std::cout << "restored data:";
+    for (const auto& it : restore->data_)
+    {
+        std::cout << std::hex << int(it) << ",";
+    }
+    std::cout << std::endl;
+#endif
+                            restore = nullptr;
                         }
                     }
 #ifdef DEBUG
@@ -126,6 +181,12 @@ namespace whi_modbus_server
             data.push_back(Msg.device);
             data.push_back(Msg.func);
             data.insert(data.end(), Msg.data.begin(), Msg.data.end());
+            if (Msg.crc_size == 0)
+            {
+                uint16_t crc = crc16(data.data(), data.size());
+                data.push_back(crc);
+                data.push_back(uint8_t(crc >> 8));
+            }
             serial_inst_->write(data.data(), data.size());
 #ifdef DEBUG
     std::cout << "write device addr: " << int(Msg.device) << ", func: " << int(Msg.func) << ", data: ";
@@ -157,7 +218,7 @@ namespace whi_modbus_server
             std::unique_lock lk(read_map_.at(Request->instance.device).pack_map_.at(Request->instance.func)->mtx_);
             read_map_.at(Request->instance.device).pack_map_.at(Request->instance.func)->cv_.wait_for(
                 lk,
-                std::chrono::seconds(1),
+                std::chrono::seconds(2),
                 [this, Request]{ return read_map_.at(Request->instance.device).pack_map_.at(Request->instance.func)->ready_; }
             );
         }
