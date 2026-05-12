@@ -189,10 +189,11 @@ namespace whi_modbus_server
             }
             serial_inst_->write(data.data(), data.size());
 #ifdef DEBUG
-    std::cout << "write device addr: " << int(Msg.device) << ", func: " << int(Msg.func) << ", data: ";
-    for (size_t i = 0; i < Msg.data.size(); ++i)
+    std::cout << "write device addr: " << int(Msg.device) << ", func: " << int(Msg.func) <<
+        ", crc size: " << int(Msg.crc_size) << ", data: ";
+    for (size_t i = 0; i < data.size(); ++i)
     {
-        std::cout << std::dec << int(Msg.data[i]) << ",";
+        std::cout << std::hex << int(data[i]) << ",";
     }
     std::cout << std::endl;
 #endif
