@@ -24,6 +24,8 @@ Changelog:
 #include <whi_interfaces/srv/whi_srv_mod_bus.hpp>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <bondcpp/bond.hpp>
 #include <serial/serial.h>
 
 #include <condition_variable>
@@ -33,7 +35,9 @@ Changelog:
 
 namespace whi_modbus_server
 {
-	class Modbus
+    using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+
+	class Modbus : public rclcpp_lifecycle::LifecycleNode
 	{
     public:
         class Data
@@ -63,8 +67,20 @@ namespace whi_modbus_server
 
     public:
         Modbus() = delete;
-        Modbus(std::shared_ptr<rclcpp::Node>& NodeHandle);
+        Modbus(const std::string& NodeName = "whi_modbus_server",
+            const rclcpp::NodeOptions& Options = rclcpp::NodeOptions());
         ~Modbus();
+
+    public:
+        // Create bond connection for nav2 lifecycle manager
+        void createBond();
+        // Destroy bond connection for nav2 lifecycle manager
+        void destroyBond();
+        CallbackReturn on_configure(const rclcpp_lifecycle::State&) override;
+        CallbackReturn on_activate(const rclcpp_lifecycle::State&) override;
+        CallbackReturn on_deactivate(const rclcpp_lifecycle::State&) override;
+        CallbackReturn on_cleanup(const rclcpp_lifecycle::State&) override;
+        CallbackReturn on_shutdown(const rclcpp_lifecycle::State&) override;
 
     protected:
         void init();
@@ -86,5 +102,8 @@ namespace whi_modbus_server
         std::map<uint8_t, Data> read_map_;
         rclcpp::Service<whi_interfaces::srv::WhiSrvModBus>::SharedPtr service_{ nullptr};
         rclcpp::Subscription<whi_interfaces::msg::WhiModBus>::SharedPtr subscriber_{ nullptr };
+
+        // Connection to tell that server is still up
+        std::shared_ptr<bond::Bond> bond_{nullptr};
 	};
 } // namespace whi_modbus_server

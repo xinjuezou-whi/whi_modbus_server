@@ -32,17 +32,15 @@ void signalHandler(int Signal)
 int main(int argc, char** argv)
 {
 	/// node version and copyright announcement
-	std::cout << "\nWHI ModBUS server VERSION 00.01.2" << std::endl;
-	std::cout << "Copyright©2026 Wheel Hub Intelligent Co.,Ltd. All rights reserved\n" << std::endl;
+	std::cout << "\nWHI ModBUS server VERSION 00.02.1" << std::endl;
+	std::cout << "Copyright © 2026 Wheel Hub Intelligent Co.,Ltd. All rights reserved\n" << std::endl;
 
 	/// ros infrastructure
-    const std::string nodeName("whi_modbus_server");
-
 	rclcpp::init(argc, argv);
-	auto nodeHandle = std::make_shared<rclcpp::Node>(nodeName);
 
 	/// node logic
-	auto instance = std::make_unique<whi_modbus_server::Modbus>(nodeHandle);
+    const std::string nodeName("whi_modbus_server");
+	auto instance = std::make_shared<whi_modbus_server::Modbus>(nodeName);
 
 	// override the default ros sigint handler, with this override the shutdown will be gracefull
     // NOTE: this must be set after the NodeHandle is created
@@ -60,10 +58,10 @@ int main(int argc, char** argv)
 	// service callbacks to load controllers can block the (main) control loop
 #if ASYNC
     auto executor = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
-    executor->add_node(nodeHandle);
+    executor->add_node(instance->get_node_base_interface());
     executor->spin();  // blocking until shutdown
 #else
-    rclcpp::spin(nodeHandle);
+    rclcpp::spin(instance->get_node_base_interface());
 #endif
 
 	std::cout << nodeName << " exited" << std::endl;

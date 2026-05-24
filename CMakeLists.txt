@@ -17,6 +17,9 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
+find_package(bondcpp REQUIRED)
+find_package(bond REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(serial REQUIRED)
 find_package(whi_interfaces REQUIRED)
@@ -39,6 +42,9 @@ target_link_libraries(${PROJECT_NAME}
 
 ament_target_dependencies(${PROJECT_NAME}
   rclcpp
+  rclcpp_lifecycle
+  bondcpp
+  bond
   std_msgs
   serial
   whi_interfaces

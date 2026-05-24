@@ -48,10 +48,14 @@ namespace whi_modbus_server
         return crc;
     }
 
-    Modbus::Modbus(std::shared_ptr<rclcpp::Node>& NodeHandle)
-        : node_handle_(NodeHandle)
+    Modbus::Modbus(const std::string& NodeName/* = "whi_modbus_server"*/,
+        const rclcpp::NodeOptions& Options/* = rclcpp::NodeOptions()*/)
+        : rclcpp_lifecycle::LifecycleNode(NodeName, "", Options)
     {
-        init();
+        // params
+        declare_parameter("frequency", 20.0);
+        declare_parameter("port", "/dev/ttyUSB0");
+        declare_parameter("baudrate", 9600);
     }
 
     Modbus::~Modbus()
@@ -68,15 +72,89 @@ namespace whi_modbus_server
         }
     }
 
+    void Modbus::createBond()
+    {
+        RCLCPP_INFO(get_logger(), "Creating bond (%s) to lifecycle manager.", get_name());
+
+        bond_ = std::make_shared<bond::Bond>(std::string("bond"), get_name(), shared_from_this());
+
+        bond_->setHeartbeatPeriod(0.1);
+        bond_->setHeartbeatTimeout(4.0);
+        bond_->start();
+    }
+
+    void Modbus::destroyBond()
+    {
+        RCLCPP_INFO(get_logger(), "Destroying bond (%s) to lifecycle manager.", get_name());
+
+        if (bond_)
+        {
+            bond_.reset();
+        }
+    }
+
+    CallbackReturn Modbus::on_configure(const rclcpp_lifecycle::State&)
+    {
+        RCLCPP_INFO(get_logger(), "Configuring");
+
+        init();
+        
+        return CallbackReturn::SUCCESS;
+    }
+
+    CallbackReturn Modbus::on_activate(const rclcpp_lifecycle::State&)
+    {
+        RCLCPP_INFO(get_logger(), "Activating");
+
+        if (serial_inst_)
+        {
+            // spawn the read thread
+            th_read_ = std::thread(std::bind(&Modbus::threadRead, this));
+        }
+
+        createBond();
+
+        return CallbackReturn::SUCCESS;
+    }
+
+    CallbackReturn Modbus::on_deactivate(const rclcpp_lifecycle::State&)
+    {
+        RCLCPP_INFO(get_logger(), "Deactivating");
+
+        destroyBond();
+
+        return CallbackReturn::SUCCESS;
+    }
+
+    CallbackReturn Modbus::on_cleanup(const rclcpp_lifecycle::State&)
+    {
+        RCLCPP_INFO(get_logger(), "Cleaning up");
+
+	    if (serial_inst_)
+	    {
+		    serial_inst_->close();
+	    }
+
+        subscriber_.reset();
+        service_.reset();
+
+        terminated_.store(true);
+
+        return CallbackReturn::SUCCESS;
+    }
+
+    CallbackReturn Modbus::on_shutdown(const rclcpp_lifecycle::State&)
+    {
+        RCLCPP_INFO(get_logger(), "Shutting down");
+        return CallbackReturn::SUCCESS;
+    }
+
     void Modbus::init()
     {
         // params
-        node_handle_->declare_parameter("frequency", 20.0);
-        node_handle_->declare_parameter("port", "/dev/ttyUSB0");
-        node_handle_->declare_parameter("baudrate", 9600);
-        duration_ = std::chrono::duration<double>(1.0 / node_handle_->get_parameter("frequency").as_double());
-        serial_port_ = node_handle_->get_parameter("port").as_string();
-        baudrate_ = node_handle_->get_parameter("baudrate").as_int();
+        duration_ = std::chrono::duration<double>(1.0 / get_parameter("frequency").as_double());
+        serial_port_ = get_parameter("port").as_string();
+        baudrate_ = get_parameter("baudrate").as_int();
 
         // serial
 	    try
@@ -85,19 +163,16 @@ namespace whi_modbus_server
 	    }
 	    catch (serial::IOException& e)
 	    {
-		    RCLCPP_FATAL_STREAM(node_handle_->get_logger(), "\033[1;31" << "failed to open serial " <<
+		    RCLCPP_FATAL_STREAM(get_logger(), "\033[1;31" << "failed to open serial " <<
                 serial_port_ << "\033[0m");
 	    }
 
         if (serial_inst_)
         {
-            service_ = node_handle_->create_service<whi_interfaces::srv::WhiSrvModBus>("modbus_request", 
+            service_ = create_service<whi_interfaces::srv::WhiSrvModBus>("modbus_request", 
                 std::bind(&Modbus::onService, this, std::placeholders::_1, std::placeholders::_2));
-            subscriber_ = node_handle_->create_subscription<whi_interfaces::msg::WhiModBus>(
+            subscriber_ = create_subscription<whi_interfaces::msg::WhiModBus>(
                 "modbus_request", 10, std::bind(&Modbus::callbackSub, this, std::placeholders::_1));
-
-            // spawn the read thread
-            th_read_ = std::thread(std::bind(&Modbus::threadRead, this));
         }
     }
 
@@ -189,23 +264,22 @@ namespace whi_modbus_server
             }
             serial_inst_->write(data.data(), data.size());
 #ifdef DEBUG
-    std::cout << "write device addr: " << int(Msg.device) << ", func: " << int(Msg.func) <<
-        ", crc size: " << int(Msg.crc_size) << ", data: ";
-    for (size_t i = 0; i < data.size(); ++i)
+    std::cout << "write device addr: " << int(Msg.device) << ", func: " << int(Msg.func) << ", data: ";
+    for (size_t i = 0; i < Msg.data.size(); ++i)
     {
-        std::cout << std::hex << int(data[i]) << ",";
+        std::cout << std::dec << int(Msg.data[i]) << ",";
     }
     std::cout << std::endl;
 #endif
         }
         catch (const serial::IOException& e) 
         {
-		    RCLCPP_FATAL_STREAM(node_handle_->get_logger(), "\033[1;31" << "ModBUS IO Exception: " <<
+		    RCLCPP_FATAL_STREAM(get_logger(), "\033[1;31" << "ModBUS IO Exception: " <<
                 e.what() << "\033[0m");
         }
         catch (const serial::SerialException& e) 
         {
-		    RCLCPP_FATAL_STREAM(node_handle_->get_logger(), "\033[1;31" << "ModBUS Serial Exception: " <<
+		    RCLCPP_FATAL_STREAM(get_logger(), "\033[1;31" << "ModBUS Serial Exception: " <<
                 e.what() << "\033[0m");
         }
     }

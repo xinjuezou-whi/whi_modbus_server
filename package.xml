@@ -9,23 +9,13 @@
   <!-- Dependencies -->
   <buildtool_depend>ament_cmake</buildtool_depend>  
   
-  <!-- Build dependencies -->
-  <build_depend>rclcpp</build_depend>
-  <build_depend>std_msgs</build_depend>
-  <build_depend>serial</build_depend>
-  <build_depend>whi_interfaces</build_depend>
-  
-  <!-- Build export dependencies -->
-  <build_export_depend>rclcpp</build_export_depend>
-  <build_export_depend>std_msgs</build_export_depend>
-  <build_export_depend>serial</build_export_depend>
-  <build_export_depend>whi_interfaces</build_export_depend>
-
-  <!-- Runtime dependencies -->
-  <exec_depend>rclcpp</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
-  <exec_depend>serial</exec_depend>
-  <exec_depend>whi_interfaces</exec_depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>bondcpp</depend>
+  <depend>bond</depend>
+  <depend>std_msgs</depend>
+  <depend>serial</depend>
+  <depend>whi_interfaces</depend>
 
   <export>
     <build_type>ament_cmake</build_type>
