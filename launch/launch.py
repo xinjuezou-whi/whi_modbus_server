@@ -42,7 +42,6 @@ def generate_launch_description():
         'config',
         'config.yaml'
     ])
-
     configured_params = ParameterFile(
         RewrittenYaml(
             source_file=config_file,
