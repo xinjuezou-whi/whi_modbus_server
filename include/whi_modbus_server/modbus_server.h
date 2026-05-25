@@ -91,7 +91,6 @@ namespace whi_modbus_server
         void callbackSub(const whi_interfaces::msg::WhiModBus::SharedPtr Msg);
 
     protected:
-        std::shared_ptr<rclcpp::Node> node_handle_{ nullptr };
         std::thread th_read_;
         std::atomic_bool terminated_{ false };
         std::chrono::duration<double> duration_{ 0.05 };
