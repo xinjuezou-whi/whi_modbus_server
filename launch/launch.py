@@ -54,7 +54,7 @@ def generate_launch_description():
     )
 
     # Node
-    start_modbus_io_node = LifecycleNode(
+    start_modbus_server_node = LifecycleNode(
         package='whi_modbus_server',
         executable='whi_modbus_server_node',
         name='whi_modbus_server',
@@ -82,6 +82,6 @@ def generate_launch_description():
     return LaunchDescription([
         declare_namespace_arg,
         declare_use_sim_time_arg,
-        start_modbus_io_node,
+        start_modbus_server_node,
         start_lifecycle_manager_cmd,
     ])
