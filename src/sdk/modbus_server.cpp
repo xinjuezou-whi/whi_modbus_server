@@ -60,16 +60,16 @@ namespace whi_modbus_server
 
     Modbus::~Modbus()
     {
-	    if (serial_inst_)
-	    {
-		    serial_inst_->close();
-	    }
-
         terminated_.store(true);
         if (th_read_.joinable())
         {
             th_read_.join();
         }
+
+	    if (serial_inst_)
+	    {
+		    serial_inst_->close();
+	    }
     }
 
     void Modbus::createBond()
@@ -121,6 +121,17 @@ namespace whi_modbus_server
     {
         RCLCPP_INFO(get_logger(), "Deactivating");
 
+        terminated_.store(true);
+        if (th_read_.joinable())
+        {
+            th_read_.join();
+        }
+
+        if (serial_inst_)
+	    {
+		    serial_inst_->close();
+	    }
+
         destroyBond();
 
         return CallbackReturn::SUCCESS;
@@ -129,11 +140,6 @@ namespace whi_modbus_server
     CallbackReturn Modbus::on_cleanup(const rclcpp_lifecycle::State&)
     {
         RCLCPP_INFO(get_logger(), "Cleaning up");
-
-	    if (serial_inst_)
-	    {
-		    serial_inst_->close();
-	    }
 
         subscriber_.reset();
         service_.reset();
