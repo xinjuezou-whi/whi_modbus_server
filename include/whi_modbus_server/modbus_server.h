@@ -84,15 +84,13 @@ namespace whi_modbus_server
 
     protected:
         void init();
-        void threadRead();
         void sendRequest(const whi_interfaces::msg::WhiModBus& Msg);
+        void readResponse();
         void onService(const std::shared_ptr<whi_interfaces::srv::WhiSrvModBus::Request> Request,
             std::shared_ptr<whi_interfaces::srv::WhiSrvModBus::Response> Response);
         void callbackSub(const whi_interfaces::msg::WhiModBus::SharedPtr Msg);
 
     protected:
-        std::thread th_read_;
-        std::atomic_bool terminated_{ false };
         std::chrono::duration<double> duration_{ 0.05 };
         int device_addr_{ 0x01 };
 	    std::string serial_port_;
@@ -102,6 +100,9 @@ namespace whi_modbus_server
         rclcpp::Service<whi_interfaces::srv::WhiSrvModBus>::SharedPtr service_{ nullptr};
         rclcpp::Subscription<whi_interfaces::msg::WhiModBus>::SharedPtr subscriber_{ nullptr };
 
+        bool with_bond_{ true };
+        double heart_beat_period_{ 0.1 };
+        double heart_beat_timeout_{ 4.0 };
         // Connection to tell that server is still up
         std::shared_ptr<bond::Bond> bond_{nullptr};
 	};

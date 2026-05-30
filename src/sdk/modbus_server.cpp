@@ -56,16 +56,13 @@ namespace whi_modbus_server
         declare_parameter("frequency", 20.0);
         declare_parameter("port", "/dev/ttyUSB0");
         declare_parameter("baudrate", 9600);
+        declare_parameter("with_bond", true);
+        declare_parameter("heart_beat_period", 0.1);
+        declare_parameter("heart_beat_timeout", 4.0);
     }
 
     Modbus::~Modbus()
     {
-        terminated_.store(true);
-        if (th_read_.joinable())
-        {
-            th_read_.join();
-        }
-
 	    if (serial_inst_)
 	    {
 		    serial_inst_->close();
@@ -74,22 +71,28 @@ namespace whi_modbus_server
 
     void Modbus::createBond()
     {
-        RCLCPP_INFO(get_logger(), "Creating bond (%s) to lifecycle manager.", get_name());
+        if (with_bond_)
+        {
+            RCLCPP_INFO(get_logger(), "Creating bond (%s) to lifecycle manager.", get_name());
 
-        bond_ = std::make_shared<bond::Bond>(std::string("bond"), get_name(), shared_from_this());
+            bond_ = std::make_shared<bond::Bond>(std::string("bond"), get_name(), shared_from_this());
 
-        bond_->setHeartbeatPeriod(0.1);
-        bond_->setHeartbeatTimeout(4.0);
-        bond_->start();
+            bond_->setHeartbeatPeriod(heart_beat_period_);
+            bond_->setHeartbeatTimeout(heart_beat_timeout_);
+            bond_->start();
+        }
     }
 
     void Modbus::destroyBond()
     {
-        RCLCPP_INFO(get_logger(), "Destroying bond (%s) to lifecycle manager.", get_name());
-
-        if (bond_)
+        if (with_bond_)
         {
-            bond_.reset();
+            RCLCPP_INFO(get_logger(), "Destroying bond (%s) to lifecycle manager.", get_name());
+
+            if (bond_)
+            {
+                bond_.reset();
+            }
         }
     }
 
@@ -106,12 +109,6 @@ namespace whi_modbus_server
     {
         RCLCPP_INFO(get_logger(), "Activating");
 
-        if (serial_inst_)
-        {
-            // spawn the read thread
-            th_read_ = std::thread(std::bind(&Modbus::threadRead, this));
-        }
-
         createBond();
 
         return CallbackReturn::SUCCESS;
@@ -120,12 +117,6 @@ namespace whi_modbus_server
     CallbackReturn Modbus::on_deactivate(const rclcpp_lifecycle::State&)
     {
         RCLCPP_INFO(get_logger(), "Deactivating");
-
-        terminated_.store(true);
-        if (th_read_.joinable())
-        {
-            th_read_.join();
-        }
 
         if (serial_inst_)
 	    {
@@ -144,8 +135,6 @@ namespace whi_modbus_server
         subscriber_.reset();
         service_.reset();
 
-        terminated_.store(true);
-
         return CallbackReturn::SUCCESS;
     }
 
@@ -161,6 +150,12 @@ namespace whi_modbus_server
         duration_ = std::chrono::duration<double>(1.0 / get_parameter("frequency").as_double());
         serial_port_ = get_parameter("port").as_string();
         baudrate_ = get_parameter("baudrate").as_int();
+        with_bond_ = get_parameter("with_bond").as_bool();
+        if (with_bond_)
+        {
+            heart_beat_period_ = get_parameter("heart_beat_period").as_double();
+            heart_beat_timeout_ = get_parameter("heart_beat_timeout").as_double();
+        }
 
         // serial
 	    try
@@ -182,11 +177,51 @@ namespace whi_modbus_server
         }
     }
 
-    void Modbus::threadRead()
+    void Modbus::sendRequest(const whi_interfaces::msg::WhiModBus& Msg)
+    {
+        read_map_[Msg.device] = Data();
+        read_map_.at(Msg.device).pack_map_[Msg.func] = std::make_shared<Data::Pack>();
+        read_map_.at(Msg.device).pack_map_.at(Msg.func)->write_time_ = rclcpp::Clock().now();
+
+        try
+        {
+            std::vector<uint8_t> data;
+            data.push_back(Msg.device);
+            data.push_back(Msg.func);
+            data.insert(data.end(), Msg.data.begin(), Msg.data.end());
+            if (Msg.crc_size == 0)
+            {
+                uint16_t crc = crc16(data.data(), data.size());
+                data.push_back(crc);
+                data.push_back(uint8_t(crc >> 8));
+            }
+            serial_inst_->write(data.data(), data.size());
+#ifdef DEBUG
+    std::cout << "write device addr: " << int(Msg.device) << ", func: " << int(Msg.func) << ", data: ";
+    for (size_t i = 0; i < Msg.data.size(); ++i)
+    {
+        std::cout << std::dec << int(Msg.data[i]) << ",";
+    }
+    std::cout << std::endl;
+#endif
+        }
+        catch (const serial::IOException& e) 
+        {
+		    RCLCPP_FATAL_STREAM(get_logger(), "\033[1;31" << "ModBUS IO Exception: " <<
+                e.what() << "\033[0m");
+        }
+        catch (const serial::SerialException& e) 
+        {
+		    RCLCPP_FATAL_STREAM(get_logger(), "\033[1;31" << "ModBUS Serial Exception: " <<
+                e.what() << "\033[0m");
+        }
+    }
+
+    void Modbus::readResponse()
     {
         Data::Pack* restore = nullptr;
 
-        while (!terminated_.load())
+        do
         {
             size_t count = serial_inst_->available();
             if (count > 0)
@@ -247,53 +282,14 @@ namespace whi_modbus_server
             }
 
             std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(duration_));
-        }
-    }
-
-    void Modbus::sendRequest(const whi_interfaces::msg::WhiModBus& Msg)
-    {
-        read_map_[Msg.device] = Data();
-        read_map_.at(Msg.device).pack_map_[Msg.func] = std::make_shared<Data::Pack>();
-        read_map_.at(Msg.device).pack_map_.at(Msg.func)->write_time_ = rclcpp::Clock().now();
-
-        try
-        {
-            std::vector<uint8_t> data;
-            data.push_back(Msg.device);
-            data.push_back(Msg.func);
-            data.insert(data.end(), Msg.data.begin(), Msg.data.end());
-            if (Msg.crc_size == 0)
-            {
-                uint16_t crc = crc16(data.data(), data.size());
-                data.push_back(crc);
-                data.push_back(uint8_t(crc >> 8));
-            }
-            serial_inst_->write(data.data(), data.size());
-#ifdef DEBUG
-    std::cout << "write device addr: " << int(Msg.device) << ", func: " << int(Msg.func) << ", data: ";
-    for (size_t i = 0; i < Msg.data.size(); ++i)
-    {
-        std::cout << std::dec << int(Msg.data[i]) << ",";
-    }
-    std::cout << std::endl;
-#endif
-        }
-        catch (const serial::IOException& e) 
-        {
-		    RCLCPP_FATAL_STREAM(get_logger(), "\033[1;31" << "ModBUS IO Exception: " <<
-                e.what() << "\033[0m");
-        }
-        catch (const serial::SerialException& e) 
-        {
-		    RCLCPP_FATAL_STREAM(get_logger(), "\033[1;31" << "ModBUS Serial Exception: " <<
-                e.what() << "\033[0m");
-        }
+        } while (restore);
     }
 
     void Modbus::onService(const std::shared_ptr<whi_interfaces::srv::WhiSrvModBus::Request> Request,
         std::shared_ptr<whi_interfaces::srv::WhiSrvModBus::Response> Response)
     {
         sendRequest(Request->instance);
+        readResponse();
         
         {
             std::unique_lock lk(read_map_.at(Request->instance.device).pack_map_.at(Request->instance.func)->mtx_);
@@ -318,5 +314,6 @@ namespace whi_modbus_server
     void Modbus::callbackSub(const whi_interfaces::msg::WhiModBus::SharedPtr Msg)
     {
         sendRequest(*Msg);
+        readResponse();
     }
 } // namespace whi_modbus_server
