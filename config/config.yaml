@@ -3,3 +3,6 @@ whi_modbus_server:
     frequency: 20.0 # hz
     port: /dev/ttyUART_485_1
     baudrate: 115200
+    debug:
+      print_debug_rw: false
+      print_debug_restored: false

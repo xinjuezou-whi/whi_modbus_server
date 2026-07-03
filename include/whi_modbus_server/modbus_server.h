@@ -99,6 +99,8 @@ namespace whi_modbus_server
         std::map<uint8_t, Data> read_map_;
         rclcpp::Service<whi_interfaces::srv::WhiSrvModBus>::SharedPtr service_{ nullptr};
         rclcpp::Subscription<whi_interfaces::msg::WhiModBus>::SharedPtr subscriber_{ nullptr };
+        bool print_debug_rw_{ false };
+        bool print_debug_restored_{ false };
 
         bool with_bond_{ true };
         double heart_beat_period_{ 0.1 };

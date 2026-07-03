@@ -56,6 +56,8 @@ namespace whi_modbus_server
         declare_parameter("frequency", 20.0);
         declare_parameter("port", "/dev/ttyUSB0");
         declare_parameter("baudrate", 9600);
+        declare_parameter("debug.print_debug_rw", false);
+        declare_parameter("debug.print_debug_restored", false);
         declare_parameter("with_bond", true);
         declare_parameter("heart_beat_period", 0.1);
         declare_parameter("heart_beat_timeout", 4.0);
@@ -150,6 +152,8 @@ namespace whi_modbus_server
         duration_ = std::chrono::duration<double>(1.0 / get_parameter("frequency").as_double());
         serial_port_ = get_parameter("port").as_string();
         baudrate_ = get_parameter("baudrate").as_int();
+        print_debug_rw_ = get_parameter("debug.print_debug_rw").as_bool();
+        print_debug_restored_ = get_parameter("debug.print_debug_restored").as_bool();
         with_bond_ = get_parameter("with_bond").as_bool();
         if (with_bond_)
         {
@@ -196,14 +200,16 @@ namespace whi_modbus_server
                 data.push_back(uint8_t(crc >> 8));
             }
             serial_inst_->write(data.data(), data.size());
-#ifdef DEBUG
-    std::cout << "write device addr: " << int(Msg.device) << ", func: " << int(Msg.func) << ", data: ";
-    for (size_t i = 0; i < Msg.data.size(); ++i)
-    {
-        std::cout << std::dec << int(Msg.data[i]) << ",";
-    }
-    std::cout << std::endl;
-#endif
+
+            if (print_debug_rw_)
+            {
+                std::cout << "write device addr: " << int(Msg.device) << ", func: " << int(Msg.func) << ", data: ";
+                for (size_t i = 0; i < Msg.data.size(); ++i)
+                {
+                    std::cout << std::dec << int(Msg.data[i]) << ",";
+                }
+                std::cout << std::endl;
+            }
         }
         catch (const serial::IOException& e) 
         {
@@ -259,25 +265,29 @@ namespace whi_modbus_server
                             restore->read_time_ = rclcpp::Clock().now();
                             restore->ready_ = true;
                             restore->cv_.notify_all();
-#ifdef DEBUG
-    std::cout << "restored data:";
-    for (const auto& it : restore->data_)
-    {
-        std::cout << std::hex << int(it) << ",";
-    }
-    std::cout << std::endl;
-#endif
+
+                            if (print_debug_restored_)
+                            {
+                                std::cout << "restored data:";
+                                for (const auto& it : restore->data_)
+                                {
+                                    std::cout << std::hex << int(it) << ",";
+                                }
+                                std::cout << std::endl;
+                            }
                             restore = nullptr;
                         }
                     }
-#ifdef DEBUG
-    std::cout << "read device addr: " << int(rbuff[0]) << ", func: " << int(rbuff[1]) << ", data: ";
-    for (size_t i = 0; i < readNum - 2; ++i)
-    {
-        std::cout << std::hex << int(rbuff[i + 2]) << ",";
-    }
-    std::cout << std::endl;
-#endif
+
+                    if (print_debug_rw_)
+                    {
+                        std::cout << "read device addr: " << int(rbuff[0]) << ", func: " << int(rbuff[1]) << ", data: ";
+                        for (size_t i = 0; i < readNum - 2; ++i)
+                        {
+                            std::cout << std::hex << int(rbuff[i + 2]) << ",";
+                        }
+                        std::cout << std::endl;
+                    }
                 }
             }
 
