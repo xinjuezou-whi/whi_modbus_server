@@ -28,9 +28,10 @@ Changelog:
 #include <bondcpp/bond.hpp>
 #include <serial/serial.h>
 
+#include <map>
+#include <list>
 #include <condition_variable>
 #include <mutex>
-#include <map>
 #include <thread>
 
 namespace whi_modbus_server
@@ -85,22 +86,27 @@ namespace whi_modbus_server
     protected:
         void init();
         void sendRequest(const whi_interfaces::msg::WhiModBus& Msg);
-        void readResponse();
+        void readResponse(int TryCount = 3, int DurationMs = 200);
         void onService(const std::shared_ptr<whi_interfaces::srv::WhiSrvModBus::Request> Request,
             std::shared_ptr<whi_interfaces::srv::WhiSrvModBus::Response> Response);
-        void callbackSub(const whi_interfaces::msg::WhiModBus::SharedPtr Msg);
+        void onMsg(const whi_interfaces::msg::WhiModBus::SharedPtr Msg);
 
     protected:
-        std::chrono::duration<double> duration_{ 0.05 };
         int device_addr_{ 0x01 };
 	    std::string serial_port_;
 	    int baudrate_{ 9600 };
         std::unique_ptr<serial::Serial> serial_inst_{ nullptr };
         std::map<uint8_t, Data> read_map_;
+        std::mutex mtx_;
         rclcpp::Service<whi_interfaces::srv::WhiSrvModBus>::SharedPtr service_{ nullptr};
         rclcpp::Subscription<whi_interfaces::msg::WhiModBus>::SharedPtr subscriber_{ nullptr };
         bool print_debug_rw_{ false };
         bool print_debug_restored_{ false };
+
+        std::atomic_bool terminated_{ false };
+        std::thread queue_thread_;
+        std::list<whi_interfaces::msg::WhiModBus> queue_;
+        rclcpp::CallbackGroup::SharedPtr async_callback_group_;
 
         bool with_bond_{ true };
         double heart_beat_period_{ 0.1 };

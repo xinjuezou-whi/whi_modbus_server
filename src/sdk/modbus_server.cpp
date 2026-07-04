@@ -53,7 +53,6 @@ namespace whi_modbus_server
         : rclcpp_lifecycle::LifecycleNode(NodeName, "", Options)
     {
         // params
-        declare_parameter("frequency", 20.0);
         declare_parameter("port", "/dev/ttyUSB0");
         declare_parameter("baudrate", 9600);
         declare_parameter("debug.print_debug_rw", false);
@@ -65,6 +64,11 @@ namespace whi_modbus_server
 
     Modbus::~Modbus()
     {
+        terminated_.store(true);
+        if (queue_thread_.joinable())
+        {
+            queue_thread_.join();
+        }
 	    if (serial_inst_)
 	    {
 		    serial_inst_->close();
@@ -149,7 +153,6 @@ namespace whi_modbus_server
     void Modbus::init()
     {
         // params
-        duration_ = std::chrono::duration<double>(1.0 / get_parameter("frequency").as_double());
         serial_port_ = get_parameter("port").as_string();
         baudrate_ = get_parameter("baudrate").as_int();
         print_debug_rw_ = get_parameter("debug.print_debug_rw").as_bool();
@@ -174,17 +177,37 @@ namespace whi_modbus_server
 
         if (serial_inst_)
         {
+            async_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+
+            rclcpp::ServicesQoS qosProfile;
+            qosProfile.keep_last(10);
             service_ = create_service<whi_interfaces::srv::WhiSrvModBus>("modbus_request", 
-                std::bind(&Modbus::onService, this, std::placeholders::_1, std::placeholders::_2));
+                std::bind(&Modbus::onService, this, std::placeholders::_1, std::placeholders::_2), qosProfile, async_callback_group_);
+
+            rclcpp::SubscriptionOptions subOptions;
+            subOptions.callback_group = async_callback_group_;
             subscriber_ = create_subscription<whi_interfaces::msg::WhiModBus>(
-                "modbus_request", 10, std::bind(&Modbus::callbackSub, this, std::placeholders::_1));
+                "modbus_request", 10, std::bind(&Modbus::onMsg, this, std::placeholders::_1), subOptions);
+
+            // spawn queue thread
+            queue_thread_ = std::thread([this]()
+            {
+                while (!terminated_.load())
+                {
+                    if (!queue_.empty())
+                    {
+                        auto request = queue_.front();
+                        queue_.pop_front();
+                        sendRequest(request);
+                        readResponse(1, 200);
+                    }
+                }
+            });
         }
     }
 
     void Modbus::sendRequest(const whi_interfaces::msg::WhiModBus& Msg)
     {
-        read_map_[Msg.device] = Data();
-        read_map_.at(Msg.device).pack_map_[Msg.func] = std::make_shared<Data::Pack>();
         read_map_.at(Msg.device).pack_map_.at(Msg.func)->write_time_ = rclcpp::Clock().now();
 
         try
@@ -223,84 +246,118 @@ namespace whi_modbus_server
         }
     }
 
-    void Modbus::readResponse()
+    void Modbus::readResponse(int TryCount/* = 3*/, int DurationMs/* = 200*/)
     {
+        int triedCount = 0;
         Data::Pack* restore = nullptr;
 
-        do
+        while (triedCount++ < TryCount)
         {
-            size_t count = serial_inst_->available();
-            if (count > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(DurationMs));
+
+            do
             {
-                unsigned char rbuff[count];
-                size_t readNum = serial_inst_->read(rbuff, count);
-                if (readNum > 1)
+                size_t count = serial_inst_->available();
+                if (count > 0)
                 {
-                    if (auto search = read_map_.find(rbuff[0]); search != read_map_.end())
+                    unsigned char rbuff[count];
+                    size_t readNum = serial_inst_->read(rbuff, count);
+                    if (readNum > 1)
                     {
-                        if (auto search_pack = search->second.pack_map_.find(rbuff[1]); search_pack != search->second.pack_map_.end())
+                        if (auto search = read_map_.find(rbuff[0]); search != read_map_.end())
                         {
-                            std::lock_guard<std::mutex> lock(search_pack->second->mtx_);
-                            search_pack->second->data_ = std::vector<uint8_t>(rbuff, rbuff + readNum);
-                            if (search_pack->second->data_.size() > 4)
+                            if (auto search_pack = search->second.pack_map_.find(rbuff[1]); search_pack != search->second.pack_map_.end())
                             {
-                                search_pack->second->read_time_ = rclcpp::Clock().now();
-                                search_pack->second->ready_ = true;
-                                search_pack->second->cv_.notify_all();
+                                std::lock_guard<std::mutex> lock(search_pack->second->mtx_);
+                                search_pack->second->data_ = std::vector<uint8_t>(rbuff, rbuff + readNum);
+                                if (search_pack->second->data_.size() > 4)
+                                {
+                                    search_pack->second->read_time_ = rclcpp::Clock().now();
+                                    search_pack->second->ready_ = true;
+                                    search_pack->second->cv_.notify_all();
+                                }
+                                else
+                                {
+                                    restore = search_pack->second.get();
+                                    continue;
+                                }
                             }
-                            else
+                        }
+                        else
+                        {
+                            if (restore)
                             {
-                                restore = search_pack->second.get();
-                                continue;
+                                // simple restore mechanism
+                                std::lock_guard<std::mutex> lock(restore->mtx_);
+                                restore->data_.insert(restore->data_.end(), rbuff, rbuff + readNum);
+                                restore->read_time_ = rclcpp::Clock().now();
+                                restore->ready_ = true;
+                                restore->cv_.notify_all();
+
+                                if (print_debug_restored_)
+                                {
+                                    std::cout << "restored data:";
+                                    for (const auto& it : restore->data_)
+                                    {
+                                        std::cout << std::hex << int(it) << ",";
+                                    }
+                                    std::cout << std::endl;
+                                }
+                                restore = nullptr;
                             }
+                        }
+
+                        if (print_debug_rw_)
+                        {
+                            std::cout << "read device addr: " << int(rbuff[0]) << ", func: " << int(rbuff[1]) << ", data: ";
+                            for (size_t i = 0; i < readNum - 2; ++i)
+                            {
+                                std::cout << std::hex << int(rbuff[i + 2]) << ",";
+                            }
+                            std::cout << std::endl;
                         }
                     }
                     else
                     {
-                        if (restore)
-                        {
-                            // simple restore mechanism
-                            std::lock_guard<std::mutex> lock(restore->mtx_);
-                            restore->data_.insert(restore->data_.end(), rbuff, rbuff + readNum);
-                            restore->read_time_ = rclcpp::Clock().now();
-                            restore->ready_ = true;
-                            restore->cv_.notify_all();
-
-                            if (print_debug_restored_)
-                            {
-                                std::cout << "restored data:";
-                                for (const auto& it : restore->data_)
-                                {
-                                    std::cout << std::hex << int(it) << ",";
-                                }
-                                std::cout << std::endl;
-                            }
-                            restore = nullptr;
-                        }
-                    }
-
-                    if (print_debug_rw_)
-                    {
-                        std::cout << "read device addr: " << int(rbuff[0]) << ", func: " << int(rbuff[1]) << ", data: ";
-                        for (size_t i = 0; i < readNum - 2; ++i)
-                        {
-                            std::cout << std::hex << int(rbuff[i + 2]) << ",";
-                        }
-                        std::cout << std::endl;
+                        serial_inst_->flush();
                     }
                 }
-            }
 
-            std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(duration_));
-        } while (restore);
+                std::this_thread::sleep_for(std::chrono::milliseconds(DurationMs));
+            } while (restore);
+        }
     }
 
     void Modbus::onService(const std::shared_ptr<whi_interfaces::srv::WhiSrvModBus::Request> Request,
         std::shared_ptr<whi_interfaces::srv::WhiSrvModBus::Response> Response)
     {
-        sendRequest(Request->instance);
-        readResponse();
-        
+        // std::lock_guard<std::mutex> guard(mtx_);
+        if (print_debug_rw_)
+        {
+            std::cout << "triggeredddddddddddddddddddddddddddddd: " << int(Request->instance.device) << ", func: " << int(Request->instance.func) << std::endl;
+        }
+
+        if (auto search = read_map_.find(Request->instance.device); search == read_map_.end())
+        {
+            read_map_[Request->instance.device] = Data();
+        }
+        if (auto search = read_map_.at(Request->instance.device).pack_map_.find(Request->instance.func); search == read_map_.at(Request->instance.device).pack_map_.end())
+        {
+            read_map_.at(Request->instance.device).pack_map_[Request->instance.func] = std::make_shared<Data::Pack>();
+        }
+
+        {
+            std::unique_lock<std::mutex> lock(mtx_);
+            if (queue_.size() > 100)
+            {
+                queue_.clear();
+            }
+            else
+            {
+                queue_.emplace_back(Request->instance);
+            }
+        }
+
         {
             std::unique_lock lk(read_map_.at(Request->instance.device).pack_map_.at(Request->instance.func)->mtx_);
             read_map_.at(Request->instance.device).pack_map_.at(Request->instance.func)->cv_.wait_for(
@@ -321,9 +378,27 @@ namespace whi_modbus_server
         }
     }
 
-    void Modbus::callbackSub(const whi_interfaces::msg::WhiModBus::SharedPtr Msg)
+    void Modbus::onMsg(const whi_interfaces::msg::WhiModBus::SharedPtr Msg)
     {
-        sendRequest(*Msg);
-        readResponse();
+        if (auto search = read_map_.find(Msg->device); search == read_map_.end())
+        {
+            read_map_[Msg->device] = Data();
+        }
+        if (auto search = read_map_.at(Msg->device).pack_map_.find(Msg->func); search == read_map_.at(Msg->device).pack_map_.end())
+        {
+            read_map_.at(Msg->device).pack_map_[Msg->func] = std::make_shared<Data::Pack>();
+        }
+
+        {
+            std::unique_lock<std::mutex> lock(mtx_);
+            if (queue_.size() > 100)
+            {
+                queue_.clear();
+            }
+            else
+            {
+                queue_.emplace_back(*Msg);
+            }
+        }
     }
 } // namespace whi_modbus_server
